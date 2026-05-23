@@ -1,0 +1,42 @@
+# ── Raw datasets ──────────────────────────────────────────────────────────────
+
+# MovieLens 25M
+dataset/ML25M/
+
+# MovieGenre / poster CSV
+dataset/MovieGenreFromItsPoster/
+
+# TMDB
+dataset/TMDB/
+
+# ── Processed dataset outputs ─────────────────────────────────────────────────
+
+# Large CSVs and embeddings produced by build_multimodal_dataset_v2.py
+dataset/MultimodalMovieDataset_v2/*.csv
+dataset/MultimodalMovieDataset_v2/*.npy
+dataset/MultimodalMovieDataset_v2/poster_cache/
+
+# Keep the dataset README
+!dataset/MultimodalMovieDataset_v2/README.md
+
+# ── Saved model weights ───────────────────────────────────────────────────────
+saved_models/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env
+
+# ── OS artefacts ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
