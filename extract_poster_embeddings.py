@@ -1,6 +1,5 @@
 """
-Poster embedding extractor
-==========================
+Poster embedding extractor.
 
 Downloads poster images and extracts MobileNetV2 embeddings aligned by
 movie_idx. By default, the script auto-detects the processed dataset folder
@@ -44,6 +43,7 @@ MOVIE_CSV_CANDIDATES = (
 EMBED_DIM = 1280
 IMG_SIZE = (224, 224)
 USER_AGENT = "Mozilla/5.0 (compatible; poster-embedding-extractor/1.0)"
+INVALID_URL_TOKENS = {"", "nan", "none", "<na>", "null"}
 
 
 def script_dir() -> Path:
@@ -60,9 +60,17 @@ def default_data_dir() -> Path:
         root,
     ]
     for candidate in candidates:
-        if (candidate / "movie2idx.csv").exists():
+        has_movie_csv = any((candidate / name).exists() for name in MOVIE_CSV_CANDIDATES)
+        if (candidate / "movie2idx.csv").exists() and has_movie_csv:
             return candidate
     return root
+
+
+def positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return number
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,10 +105,10 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Checkpoint .npy path. Defaults to DATA_DIR/poster_embeddings_checkpoint.npy.",
     )
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--workers", type=int, default=20)
-    parser.add_argument("--save-every", type=int, default=1000)
-    parser.add_argument("--timeout", type=int, default=10)
+    parser.add_argument("--batch-size", type=positive_int, default=32)
+    parser.add_argument("--workers", type=positive_int, default=20)
+    parser.add_argument("--save-every", type=positive_int, default=1000)
+    parser.add_argument("--timeout", type=positive_int, default=10)
     parser.add_argument(
         "--skip-download",
         action="store_true",
@@ -117,6 +125,13 @@ def parse_args() -> argparse.Namespace:
         help="Do not auto-extract poster_cache*.zip when the cache is empty.",
     )
     return parser.parse_args()
+
+
+def clean_url(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text.lower() in INVALID_URL_TOKENS else text
 
 
 def find_movie_csv(data_dir: Path, explicit: Path | None) -> Path:
@@ -147,7 +162,7 @@ def load_movie_list(movie_csv: Path, movie2idx_csv: Path) -> tuple[pd.DataFrame,
     movies = pd.read_csv(movie_csv, usecols=["movie_idx", "poster_url"])
     movies = movies.dropna(subset=["movie_idx"]).copy()
     movies["movie_idx"] = movies["movie_idx"].astype(int)
-    movies["poster_url"] = movies["poster_url"].fillna("").astype(str).str.strip()
+    movies["poster_url"] = movies["poster_url"].apply(clean_url)
     movies["has_url"] = movies["poster_url"].ne("")
 
     bad = movies[(movies["movie_idx"] < 0) | (movies["movie_idx"] >= n_movies)]
@@ -167,6 +182,16 @@ def load_movie_list(movie_csv: Path, movie2idx_csv: Path) -> tuple[pd.DataFrame,
     return movies[["movie_idx", "poster_url", "has_url"]], n_movies
 
 
+def safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
+    target_root = target_dir.resolve()
+    with ZipFile(zip_path) as zf:
+        for member in zf.infolist():
+            member_path = (target_root / member.filename).resolve()
+            if target_root != member_path and target_root not in member_path.parents:
+                raise ValueError(f"Unsafe path in zip archive: {member.filename}")
+        zf.extractall(target_root)
+
+
 def maybe_unzip_cache(data_dir: Path, cache_dir: Path) -> None:
     existing = list(cache_dir.glob("*.jpg")) if cache_dir.exists() else []
     if existing:
@@ -178,8 +203,18 @@ def maybe_unzip_cache(data_dir: Path, cache_dir: Path) -> None:
 
     zip_path = zips[0]
     print(f"    Cache empty. Extracting {zip_path.name}...")
-    with ZipFile(zip_path) as zf:
-        zf.extractall(data_dir)
+    safe_extract_zip(zip_path, data_dir)
+
+
+def cached_image_is_valid(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size <= 0:
+        return False
+    try:
+        with Image.open(path) as image:
+            image.verify()
+        return True
+    except Exception:  # noqa: BLE001 - bad cache files are re-downloaded
+        return False
 
 
 def download_one(row: dict, cache_dir: Path, timeout: int) -> tuple[int, str]:
@@ -187,8 +222,13 @@ def download_one(row: dict, cache_dir: Path, timeout: int) -> tuple[int, str]:
     url = row["poster_url"]
     dest = cache_dir / f"{idx}.jpg"
 
-    if dest.exists() and dest.stat().st_size > 0:
-        return idx, "cached"
+    if dest.exists():
+        if cached_image_is_valid(dest):
+            return idx, "cached"
+        try:
+            dest.unlink()
+        except OSError:
+            return idx, "bad_cache"
     if not url:
         return idx, "missing_url"
 
@@ -335,7 +375,26 @@ def main() -> None:
 
         print(f"    Download complete: {ok:,} cached/saved, {fail:,} failed")
 
-    print("\n[3] Loading TensorFlow + MobileNetV2...")
+    print("\n[3] Preparing embedding array...")
+    embeddings = load_or_init_embeddings(n_movies, out_npy, checkpoint)
+    already_done = set(np.flatnonzero(np.any(embeddings != 0, axis=1)).tolist())
+    image_paths = cache_image_paths(cache_dir, n_movies)
+    todo_cnn = [p for p in image_paths if int(p.stem) not in already_done]
+    print(f"    Images on disk  : {len(image_paths):,}")
+    print(f"    Already encoded : {len(already_done):,}")
+    print(f"    To process      : {len(todo_cnn):,}")
+
+    if not todo_cnn:
+        print("\n[4] No new poster images to encode. TensorFlow was not loaded.")
+        print(f"\n[5] Saving final embeddings -> {out_npy}")
+        np.save(out_npy, embeddings)
+        covered = int(np.any(embeddings != 0, axis=1).sum())
+        print(f"    Shape   : {embeddings.shape}")
+        print(f"    Covered : {covered:,} / {n_movies:,} movies")
+        print("    Done.")
+        return
+
+    print("\n[4] Loading TensorFlow + MobileNetV2...")
     import tensorflow as tf
     from tensorflow import keras
 
@@ -349,15 +408,6 @@ def main() -> None:
     base.trainable = False
     preprocess = keras.applications.mobilenet_v2.preprocess_input
     print(f"    MobileNetV2 ready. Output shape: {base.output_shape}")
-
-    print("\n[4] Preparing embedding array...")
-    embeddings = load_or_init_embeddings(n_movies, out_npy, checkpoint)
-    already_done = set(np.flatnonzero(np.any(embeddings != 0, axis=1)).tolist())
-    image_paths = cache_image_paths(cache_dir, n_movies)
-    todo_cnn = [p for p in image_paths if int(p.stem) not in already_done]
-    print(f"    Images on disk  : {len(image_paths):,}")
-    print(f"    Already encoded : {len(already_done):,}")
-    print(f"    To process      : {len(todo_cnn):,}")
 
     print(f"\n[5] Extracting features (batch={args.batch_size})...")
     total = len(todo_cnn)
