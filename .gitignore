@@ -11,7 +11,7 @@ dataset/TMDB/
 
 # ── Processed dataset outputs ─────────────────────────────────────────────────
 
-# Large CSVs and embeddings produced by build_multimodal_dataset_v2.py
+# Large CSVs and embeddings produced by dataset/merge.ipynb and extract_poster_embeddings.py
 dataset/MultimodalMovieDataset_v2/*.csv
 dataset/MultimodalMovieDataset_v2/*.npy
 dataset/MultimodalMovieDataset_v2/poster_cache/

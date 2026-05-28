@@ -3,8 +3,8 @@ Poster embedding extractor
 ==========================
 
 Downloads poster images and extracts MobileNetV2 embeddings aligned by
-movie_idx. By default, all inputs and outputs live in the same folder as this
-script, which makes the script portable between Windows and Colab.
+movie_idx. By default, the script auto-detects the processed dataset folder
+when it is run from the project checkout.
 
 Expected files in DATA_DIR:
   - movie2idx.csv
@@ -52,12 +52,25 @@ def script_dir() -> Path:
     return Path.cwd()
 
 
+def default_data_dir() -> Path:
+    root = script_dir()
+    candidates = [
+        root / "dataset" / "MultimodalMovieDataset_v2",
+        root / "MultimodalMovieDataset_v2",
+        root,
+    ]
+    for candidate in candidates:
+        if (candidate / "movie2idx.csv").exists():
+            return candidate
+    return root
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract poster CNN embeddings.")
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=script_dir(),
+        default=default_data_dir(),
         help="Folder containing movie2idx.csv and the movie feature CSV.",
     )
     parser.add_argument(
